@@ -1,0 +1,58 @@
+version: 2
+
+project_name: scaleset-ec2-provider
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: scaleset-ec2-provider
+    main: ./cmd/scaleset-ec2-provider
+    binary: scaleset-ec2-provider
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+archives:
+  - id: scaleset-ec2-provider
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    format: tar.gz
+    files:
+      - none*
+
+checksum:
+  name_template: 'checksums.txt'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+
+release:
+  github:
+    owner: studiodwyer
+    name: scaleset-ec2-provider
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
