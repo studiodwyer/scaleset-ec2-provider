@@ -1,6 +1,6 @@
 # scaleset-ec2-provider
 
-Scale GitHub Actions runners using EC2 instances. Implements ephemeral runners that execute a single job and self-terminate.
+EC2 provider for [actions/scaleset](https://github.com/actions/scaleset) — scale GitHub Actions runners using EC2 instances. Implements ephemeral runners that execute a single job and self-terminate.
 
 ```bash
 make build
