@@ -20,7 +20,7 @@ If the binary crashed before cleanup, you can manually delete a scale set (uses 
 
 ## Configuration
 
-Config is loaded from the TOML file passed to `--config`. Lists (`labels`, `instance_types`, `security_group_ids`) are native TOML arrays. The GitHub App private key is a multi-line PEM string using TOML triple-quoted strings.
+Config is loaded from the TOML file passed to `--config`. Lists (`labels`, `instance_types`, `security_group_ids`) are native TOML arrays. The GitHub App private key may be provided inline as a multi-line PEM string (TOML triple-quoted), or fetched from AWS Secrets Manager at startup by setting `private_key_secret` to the secret's name/ARN.
 
 | Key | Required | Description |
 |-----|----------|-------------|
@@ -44,7 +44,7 @@ Config is loaded from the TOML file passed to `--config`. Lists (`labels`, `inst
 | `log_level` | No | `debug`, `info`, `warn`, `error` (default: `info`) |
 | `log_format` | No | `text`, `json` (default: `text`) |
 
-*Provide either `[github_app]` (all three fields) OR `token`.
+*Provide either `[github_app]` (all three fields; set either `private_key` OR `private_key_secret`) OR `token`.
 
 ### `[github_app]`
 
@@ -52,7 +52,8 @@ Config is loaded from the TOML file passed to `--config`. Lists (`labels`, `inst
 |-----|-------------|
 | `client_id` | GitHub App Client ID |
 | `installation_id` | GitHub App Installation ID |
-| `private_key` | GitHub App private key (PEM, triple-quoted multi-line string) |
+| `private_key` | GitHub App private key (PEM, triple-quoted multi-line string). Mutually exclusive with `private_key_secret`. |
+| `private_key_secret` | Name or ARN of an AWS Secrets Manager secret holding the PEM private key. Fetched at startup via the default AWS credential chain (instance profile, env vars, etc.). Mutually exclusive with `private_key`. |
 
 ### Example
 
