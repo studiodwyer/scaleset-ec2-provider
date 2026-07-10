@@ -516,10 +516,11 @@ func run(ctx context.Context, c Config, configPath string) error {
 	}
 }
 
-// reloadConfig re-reads and validates the config file, then atomically applies
-// the reloadable EC2/scaling parameters to the scaler. On any error the
-// existing config is left untouched. Non-reloadable field changes are logged as
-// warnings (they require a restart).
+// reloadConfig re-reads the config file and atomically applies the reloadable
+// EC2/scaling parameters to the scaler. Only reloadable fields are validated
+// (auth/url/name are skipped — the private key may live in Secrets Manager and
+// is never reloaded). On any error the existing config is left untouched.
+// Non-reloadable field changes are logged as warnings (they require a restart).
 func reloadConfig(logger *slog.Logger, configPath string, scaler *Scaler, current *Config) {
 	logger.Info("Reloading config", slog.String("path", configPath))
 
@@ -528,7 +529,7 @@ func reloadConfig(logger *slog.Logger, configPath string, scaler *Scaler, curren
 		logger.Error("Config reload failed; keeping current config", slog.String("error", err.Error()))
 		return
 	}
-	if err := newCfg.Validate(); err != nil {
+	if err := newCfg.ValidateReloadable(); err != nil {
 		logger.Error("Config reload failed validation; keeping current config", slog.String("error", err.Error()))
 		return
 	}

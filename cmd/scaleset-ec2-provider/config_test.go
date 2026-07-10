@@ -200,3 +200,68 @@ func validConfig() Config {
 		MinRunners:       0,
 	}
 }
+
+func TestValidateReloadable_NoCredentialsOK(t *testing.T) {
+	// Mirrors a Secrets Manager setup: the private key is not in the config
+	// file, and auth/url/name are absent. Reload must not require them.
+	c := Config{
+		AMI:              "ami-test",
+		SubnetID:         "subnet-test",
+		SecurityGroupIDs: []string{"sg-test"},
+		MaxRunners:       10,
+		MinRunners:       0,
+	}
+	if err := c.ValidateReloadable(); err != nil {
+		t.Fatalf("ValidateReloadable should ignore auth, got: %v", err)
+	}
+}
+
+func TestValidateReloadable_DefaultsInstanceTypes(t *testing.T) {
+	c := Config{
+		AMI:              "ami-test",
+		SubnetID:         "subnet-test",
+		SecurityGroupIDs: []string{"sg-test"},
+	}
+	if err := c.ValidateReloadable(); err != nil {
+		t.Fatalf("ValidateReloadable: %v", err)
+	}
+	if len(c.InstanceTypes) != 1 || c.InstanceTypes[0] != "t3.medium" {
+		t.Errorf("expected default t3.medium, got %v", c.InstanceTypes)
+	}
+}
+
+func TestValidateReloadable_InvalidFields(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Config)
+		want string
+	}{
+		{"missing ami", func(c *Config) { c.AMI = "" }, "ami-id is required"},
+		{"missing subnet", func(c *Config) { c.SubnetID = "" }, "subnet-id is required"},
+		{"missing security groups", func(c *Config) { c.SecurityGroupIDs = nil }, "security-group-ids is required"},
+		{"max < min", func(c *Config) {
+			c.MinRunners = 5
+			c.MaxRunners = 1
+		}, "max runners cannot be less than min-runners"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Config{
+				AMI:              "ami-test",
+				SubnetID:         "subnet-test",
+				SecurityGroupIDs: []string{"sg-test"},
+				MaxRunners:       10,
+				MinRunners:       0,
+			}
+			tc.mut(&c)
+			err := c.ValidateReloadable()
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tc.want)
+			}
+		})
+	}
+}

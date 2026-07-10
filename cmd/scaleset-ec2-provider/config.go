@@ -62,6 +62,14 @@ func (c *Config) Validate() error {
 	if c.ScaleSetName == "" {
 		return fmt.Errorf("scale set name is required")
 	}
+
+	return c.validateReloadableFields()
+}
+
+// validateReloadableFields holds the checks for the hot-reloadable EC2/scaling
+// fields. It is shared by Validate (startup) and ValidateReloadable (SIGHUP) so
+// the two paths cannot drift.
+func (c *Config) validateReloadableFields() error {
 	if c.AMI == "" {
 		return fmt.Errorf("ami-id is required")
 	}
@@ -74,8 +82,19 @@ func (c *Config) Validate() error {
 	if c.MaxRunners < c.MinRunners {
 		return fmt.Errorf("max runners cannot be less than min-runners")
 	}
-
 	return nil
+}
+
+// ValidateReloadable validates only the fields that a SIGHUP hot reload applies
+// (instance_types default + EC2/scaling checks). It intentionally does NOT
+// check credentials, url, or scale set name: those are not reloaded, and the
+// GitHub App private key may live in AWS Secrets Manager rather than the config
+// file (so it is absent from a freshly-loaded config).
+func (c *Config) ValidateReloadable() error {
+	if len(c.InstanceTypes) == 0 {
+		c.InstanceTypes = []string{"t3.medium"}
+	}
+	return c.validateReloadableFields()
 }
 
 // ResolveSecrets fetches the GitHub App private key from AWS Secrets Manager
