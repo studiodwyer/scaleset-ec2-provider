@@ -65,37 +65,24 @@ func printUsage() {
 }
 
 func runCommand(args []string) {
-	var cfg Config
-	var labels, securityGroupIDs, instanceTypes string
-	var showVersion bool
+	var (
+		configPath  string
+		logLevel    string
+		logFormat   string
+		showVersion bool
+	)
 
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	fs.StringVar(&cfg.RegistrationURL, "url", "", "REQUIRED: URL where to register your scale set (e.g. https://github.com/org/repo)")
-	fs.IntVar(&cfg.MaxRunners, "max-runners", 10, "Maximum number of runners")
-	fs.IntVar(&cfg.MinRunners, "min-runners", 0, "Minimum number of runners")
-	fs.StringVar(&cfg.ScaleSetName, "name", "", "REQUIRED: Name of your scale set")
-	fs.StringVar(&labels, "labels", "", "Labels for workflow targeting (comma-separated). Defaults to --name if not provided.")
-	fs.StringVar(&cfg.RunnerGroup, "runner-group", scaleset.DefaultRunnerGroup, "Name of the runner group your scale set should belong to")
-	fs.StringVar(&cfg.GitHubApp.ClientID, "app-client-id", "", "GitHub App client id")
-	fs.Int64Var(&cfg.GitHubApp.InstallationID, "app-installation-id", 0, "GitHub App installation ID")
-	fs.StringVar(&cfg.GitHubApp.PrivateKey, "app-private-key", "", "GitHub App private key")
-	fs.StringVar(&cfg.Token, "token", "", "Personal access token (can be used in place of a GitHub App)")
-	fs.StringVar(&cfg.LogLevel, "log-level", "info", "Logging level (debug, info, warn, error)")
-	fs.StringVar(&cfg.LogFormat, "log-format", "text", "Logging format (text, json)")
-	fs.StringVar(&cfg.AMI, "ami-id", "", "REQUIRED: AMI ID with GitHub Actions runner pre-installed")
-	fs.StringVar(&instanceTypes, "instance-types", "t3.medium", "EC2 instance types (comma-separated, shuffled on each launch)")
-	fs.StringVar(&cfg.SubnetID, "subnet-id", "", "REQUIRED: Subnet ID for EC2 instances")
-	fs.StringVar(&securityGroupIDs, "security-group-ids", "", "REQUIRED: Security group IDs (comma-separated)")
-	fs.StringVar(&cfg.IAMInstanceProfile, "iam-instance-profile", "", "IAM instance profile name for EC2 instances")
-	fs.StringVar(&cfg.KeyName, "key-name", "", "SSH key pair name for runner instances")
-	fs.BoolVar(&cfg.UseSpot, "spot", false, "Use EC2 Spot instances instead of on-demand")
-	fs.IntVar(&cfg.MetricsPort, "metrics-port", 0, "Port for Prometheus metrics endpoint (0 = disabled)")
-	fs.StringVar(&cfg.Region, "region", "", "AWS region for metrics labels (auto-detected if not specified)")
+	fs.StringVar(&configPath, "config", "", "REQUIRED: Path to TOML config file")
+	fs.StringVar(&logLevel, "log-level", "", "Override config log_level (debug, info, warn, error)")
+	fs.StringVar(&logFormat, "log-format", "", "Override config log_format (text, json)")
 	fs.BoolVar(&showVersion, "version", false, "Print version information")
 
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: scaleset-ec2-provider run [options]\n\n")
-		fmt.Fprintf(fs.Output(), "Scale GitHub Actions runners using ephemeral EC2 instances.\n\nOptions:\n")
+		fmt.Fprintf(fs.Output(), "Usage: scaleset-ec2-provider run --config <path> [options]\n\n")
+		fmt.Fprintf(fs.Output(), "Scale GitHub Actions runners using ephemeral EC2 instances.\n\n")
+		fmt.Fprintf(fs.Output(), "Configuration is read from the TOML file specified by --config.\n")
+		fmt.Fprintf(fs.Output(), "Flags override their counterparts in the config file.\n\nOptions:\n")
 		fs.PrintDefaults()
 	}
 
@@ -106,14 +93,23 @@ func runCommand(args []string) {
 		os.Exit(0)
 	}
 
-	if labels != "" {
-		cfg.Labels = splitAndTrim(labels)
+	if configPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --config is required")
+		fs.Usage()
+		os.Exit(1)
 	}
-	if securityGroupIDs != "" {
-		cfg.SecurityGroupIDs = splitAndTrim(securityGroupIDs)
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+		os.Exit(1)
 	}
-	if instanceTypes != "" {
-		cfg.InstanceTypes = splitAndTrim(instanceTypes)
+
+	if logLevel != "" {
+		cfg.LogLevel = logLevel
+	}
+	if logFormat != "" {
+		cfg.LogFormat = logFormat
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -132,6 +128,7 @@ func runCommand(args []string) {
 
 func deleteCommand(args []string) {
 	var (
+		configPath    string
 		url           string
 		scaleSetName  string
 		runnerGroup   string
@@ -144,44 +141,108 @@ func deleteCommand(args []string) {
 	)
 
 	fs := flag.NewFlagSet("delete", flag.ExitOnError)
-	fs.StringVar(&url, "url", "", "REQUIRED: URL where the scale set is registered (e.g. https://github.com/org/repo)")
-	fs.StringVar(&scaleSetName, "name", "", "REQUIRED: Name of the scale set to delete")
-	fs.StringVar(&runnerGroup, "runner-group", scaleset.DefaultRunnerGroup, "Name of the runner group the scale set belongs to")
+	fs.StringVar(&configPath, "config", "", "Path to TOML config file (optional; provides defaults for the values below)")
+	fs.StringVar(&url, "url", "", "URL where the scale set is registered (e.g. https://github.com/org/repo)")
+	fs.StringVar(&scaleSetName, "name", "", "Name of the scale set to delete")
+	fs.StringVar(&runnerGroup, "runner-group", "", "Name of the runner group the scale set belongs to (default: default runner group)")
 	fs.StringVar(&appClientID, "app-client-id", "", "GitHub App client id")
 	fs.Int64Var(&appInstallID, "app-installation-id", 0, "GitHub App installation ID")
 	fs.StringVar(&appPrivateKey, "app-private-key", "", "GitHub App private key")
 	fs.StringVar(&token, "token", "", "Personal access token (can be used in place of a GitHub App)")
-	fs.StringVar(&logLevel, "log-level", "info", "Logging level (debug, info, warn, error)")
-	fs.StringVar(&logFormat, "log-format", "text", "Logging format (text, json)")
+	fs.StringVar(&logLevel, "log-level", "", "Logging level (debug, info, warn, error)")
+	fs.StringVar(&logFormat, "log-format", "", "Logging format (text, json)")
 
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), "Usage: scaleset-ec2-provider delete [options]\n\n")
-		fmt.Fprintf(fs.Output(), "Delete a runner scale set from GitHub.\n\nOptions:\n")
+		fmt.Fprintf(fs.Output(), "Usage: scaleset-ec2-provider delete [--config <path>] [options]\n\n")
+		fmt.Fprintf(fs.Output(), "Delete a runner scale set from GitHub.\n\n")
+		fmt.Fprintf(fs.Output(), "When --config is provided, its values are used as defaults;\n")
+		fmt.Fprintf(fs.Output(), "explicitly-set flags override the config file.\n\nOptions:\n")
 		fs.PrintDefaults()
 	}
 
 	fs.Parse(args)
 
-	logger := setupLogger(logLevel, logFormat)
+	setFlags := map[string]struct{}{}
+	fs.Visit(func(f *flag.Flag) { setFlags[f.Name] = struct{}{} })
 
-	if url == "" {
+	var urlVal, nameVal, runnerGroupVal, appClientIDVal, appPrivateKeyVal, tokenVal, logLevelVal, logFormatVal string
+	var appInstallIDVal int64
+
+	if configPath != "" {
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
+			os.Exit(1)
+		}
+		urlVal = cfg.RegistrationURL
+		nameVal = cfg.ScaleSetName
+		runnerGroupVal = cfg.RunnerGroup
+		appClientIDVal = cfg.GitHubApp.ClientID
+		appInstallIDVal = cfg.GitHubApp.InstallationID
+		appPrivateKeyVal = cfg.GitHubApp.PrivateKey
+		tokenVal = cfg.Token
+		logLevelVal = cfg.LogLevel
+		logFormatVal = cfg.LogFormat
+	}
+
+	if _, ok := setFlags["url"]; ok {
+		urlVal = url
+	}
+	if _, ok := setFlags["name"]; ok {
+		nameVal = scaleSetName
+	}
+	if _, ok := setFlags["runner-group"]; ok {
+		runnerGroupVal = runnerGroup
+	}
+	if _, ok := setFlags["app-client-id"]; ok {
+		appClientIDVal = appClientID
+	}
+	if _, ok := setFlags["app-installation-id"]; ok {
+		appInstallIDVal = appInstallID
+	}
+	if _, ok := setFlags["app-private-key"]; ok {
+		appPrivateKeyVal = appPrivateKey
+	}
+	if _, ok := setFlags["token"]; ok {
+		tokenVal = token
+	}
+	if _, ok := setFlags["log-level"]; ok {
+		logLevelVal = logLevel
+	}
+	if _, ok := setFlags["log-format"]; ok {
+		logFormatVal = logFormat
+	}
+
+	if runnerGroupVal == "" {
+		runnerGroupVal = scaleset.DefaultRunnerGroup
+	}
+	if logLevelVal == "" {
+		logLevelVal = "info"
+	}
+	if logFormatVal == "" {
+		logFormatVal = "text"
+	}
+
+	logger := setupLogger(logLevelVal, logFormatVal)
+
+	if urlVal == "" {
 		fmt.Fprintf(os.Stderr, "error: url is required\n")
 		fs.Usage()
 		os.Exit(1)
 	}
 
-	if scaleSetName == "" {
+	if nameVal == "" {
 		fmt.Fprintf(os.Stderr, "error: name is required\n")
 		fs.Usage()
 		os.Exit(1)
 	}
 
 	var githubApp scaleset.GitHubAppAuth
-	if appClientID != "" {
+	if appClientIDVal != "" {
 		githubApp = scaleset.GitHubAppAuth{
-			ClientID:       appClientID,
-			InstallationID: appInstallID,
-			PrivateKey:     appPrivateKey,
+			ClientID:       appClientIDVal,
+			InstallationID: appInstallIDVal,
+			PrivateKey:     appPrivateKeyVal,
 		}
 		if err := githubApp.Validate(); err != nil {
 			fmt.Fprintf(os.Stderr, "invalid GitHub App credentials: %v\n", err)
@@ -189,7 +250,7 @@ func deleteCommand(args []string) {
 		}
 	}
 
-	if githubApp.ClientID == "" && token == "" {
+	if githubApp.ClientID == "" && tokenVal == "" {
 		fmt.Fprintf(os.Stderr, "error: either GitHub App credentials or token is required\n")
 		fs.Usage()
 		os.Exit(1)
@@ -203,7 +264,7 @@ func deleteCommand(args []string) {
 	if githubApp.ClientID != "" {
 		scalesetClient, err = scaleset.NewClientWithGitHubApp(
 			scaleset.ClientWithGitHubAppConfig{
-				GitHubConfigURL: url,
+				GitHubConfigURL: urlVal,
 				GitHubAppAuth:   githubApp,
 				SystemInfo:      systemInfo(0),
 			},
@@ -211,8 +272,8 @@ func deleteCommand(args []string) {
 	} else {
 		scalesetClient, err = scaleset.NewClientWithPersonalAccessToken(
 			scaleset.NewClientWithPersonalAccessTokenConfig{
-				GitHubConfigURL:     url,
-				PersonalAccessToken: token,
+				GitHubConfigURL:     urlVal,
+				PersonalAccessToken: tokenVal,
 				SystemInfo:          systemInfo(0),
 			},
 		)
@@ -224,11 +285,11 @@ func deleteCommand(args []string) {
 	}
 
 	var runnerGroupID int
-	switch runnerGroup {
+	switch runnerGroupVal {
 	case scaleset.DefaultRunnerGroup:
 		runnerGroupID = 1
 	default:
-		rg, err := scalesetClient.GetRunnerGroupByName(ctx, runnerGroup)
+		rg, err := scalesetClient.GetRunnerGroupByName(ctx, runnerGroupVal)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to get runner group: %v\n", err)
 			os.Exit(1)
@@ -236,26 +297,26 @@ func deleteCommand(args []string) {
 		runnerGroupID = rg.ID
 	}
 
-	logger.Info("Finding scale set", slog.String("name", scaleSetName), slog.String("runnerGroup", runnerGroup))
+	logger.Info("Finding scale set", slog.String("name", nameVal), slog.String("runnerGroup", runnerGroupVal))
 
-	scaleSet, err := scalesetClient.GetRunnerScaleSet(ctx, runnerGroupID, scaleSetName)
+	scaleSet, err := scalesetClient.GetRunnerScaleSet(ctx, runnerGroupID, nameVal)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to get scale set: %v\n", err)
 		os.Exit(1)
 	}
 	if scaleSet == nil {
-		fmt.Fprintf(os.Stderr, "scale set %q not found\n", scaleSetName)
+		fmt.Fprintf(os.Stderr, "scale set %q not found\n", nameVal)
 		os.Exit(1)
 	}
 
-	logger.Info("Deleting scale set", slog.String("name", scaleSetName), slog.Int("id", scaleSet.ID))
+	logger.Info("Deleting scale set", slog.String("name", nameVal), slog.Int("id", scaleSet.ID))
 
 	if err := scalesetClient.DeleteRunnerScaleSet(ctx, scaleSet.ID); err != nil {
 		fmt.Fprintf(os.Stderr, "failed to delete scale set: %v\n", err)
 		os.Exit(1)
 	}
 
-	logger.Info("Successfully deleted scale set", slog.String("name", scaleSetName))
+	logger.Info("Successfully deleted scale set", slog.String("name", nameVal))
 }
 
 func setupLogger(logLevel, logFormat string) *slog.Logger {
@@ -287,17 +348,6 @@ func setupLogger(logLevel, logFormat string) *slog.Logger {
 	default:
 		return slog.New(slog.DiscardHandler)
 	}
-}
-
-func splitAndTrim(s string) []string {
-	parts := strings.Split(s, ",")
-	result := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if trimmed := strings.TrimSpace(p); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }
 
 func run(ctx context.Context, c Config) error {

@@ -2,79 +2,105 @@
 
 EC2 provider for [actions/scaleset](https://github.com/actions/scaleset) — scale GitHub Actions runners using EC2 instances. Implements ephemeral runners that execute a single job and self-terminate.
 
+Configuration is provided via a TOML file (`config.toml`). See [`config.example.toml`](config.example.toml) for a fully-commented template.
+
 ```bash
 make build
 
-./dist/scaleset-ec2-provider run \
-  --url https://github.com/myorg/myrepo \
-  --name ec2-runners \
-  --labels ec2-runner \
-  --ami-id ami-1234567890abcdef0 \
-  --instance-types t3.medium \
-  --subnet-id subnet-12345678 \
-  --security-group-ids sg-12345678 \
-  --iam-instance-profile github-actions-runner-instance \
-  --metrics-port 9090 \
-  --app-client-id Iv1.xxx \
-  --app-installation-id 123456 \
-  --app-private-key "$(cat private-key.pem)"
+./dist/scaleset-ec2-provider run --config config.toml
 ```
 
-If the binary crashed before cleanup, you can manually delete a scale set:
+To override individual values from the config file on a single run, the only flags accepted by `run` are `--config` (required), `--log-level`, `--log-format`, and `--version`.
+
+If the binary crashed before cleanup, you can manually delete a scale set (uses the same config file, with any flags overriding their counterparts):
 
 ```bash
-./dist/scaleset-ec2-provider delete \
-  --url https://github.com/myorg/myrepo \
-  --name ec2-runners \
-  --app-client-id Iv1.xxx \
-  --app-installation-id 123456 \
-  --app-private-key "$(cat private-key.pem)"
+./dist/scaleset-ec2-provider delete --config config.toml
 ```
 
 ## Configuration
 
-### Run Command
+Config is loaded from the TOML file passed to `--config`. Lists (`labels`, `instance_types`, `security_group_ids`) are native TOML arrays. The GitHub App private key is a multi-line PEM string using TOML triple-quoted strings.
 
-| Flag | Required | Description |
-|------|----------|-------------|
-| `--url` | Yes | GitHub org, repo, or enterprise URL |
-| `--name` | Yes | Scale set name |
-| `--labels` | No | Labels for workflow targeting (defaults to name) |
-| `--max-runners` | No | Maximum concurrent runners (default: 10) |
-| `--min-runners` | No | Minimum idle runners (default: 0) |
-| `--runner-group` | No | Runner group name (default: default runner group) |
-| `--app-client-id` | Cond.* | GitHub App Client ID |
-| `--app-installation-id` | Cond.* | GitHub App Installation ID |
-| `--app-private-key` | Cond.* | GitHub App private key |
-| `--token` | Cond.* | Personal Access Token |
-| `--ami-id` | Yes | AMI ID with runner pre-installed |
-| `--instance-types` | No | EC2 instance types, comma-separated, shuffled on each launch (default: t3.medium) |
-| `--subnet-id` | Yes | Subnet ID for instances |
-| `--security-group-ids` | Yes | Security group IDs (comma-separated) |
-| `--iam-instance-profile` | No | IAM instance profile name |
-| `--key-name` | No | SSH key pair name |
-| `--spot` | No | Use EC2 Spot instances instead of on-demand (default: false) |
-| `--metrics-port` | No | Port for Prometheus metrics endpoint (default: 0/disabled) |
-| `--region` | No | AWS region for metrics labels (auto-detected if not specified) |
-| `--log-level` | No | Log level: debug, info, warn, error (default: info) |
-| `--log-format` | No | Log format: text, json (default: text) |
-| `--version` | No | Print version information |
+| Key | Required | Description |
+|-----|----------|-------------|
+| `url` | Yes | GitHub org, repo, or enterprise URL |
+| `name` | Yes | Scale set name |
+| `labels` | No | Labels for workflow targeting (defaults to `name`) |
+| `max_runners` | No | Maximum concurrent runners (default: 10) |
+| `min_runners` | No | Minimum idle runners (default: 0) |
+| `runner_group` | No | Runner group name (default: default runner group) |
+| `token` | Cond.* | Personal Access Token |
+| `[github_app]` | Cond.* | GitHub App credentials block (see below) |
+| `ami_id` | Yes | AMI ID with runner pre-installed |
+| `instance_types` | No | EC2 instance types, shuffled on each launch (default: `["t3.medium"]`) |
+| `subnet_id` | Yes | Subnet ID for instances |
+| `security_group_ids` | Yes | Security group IDs |
+| `iam_instance_profile` | No | IAM instance profile name |
+| `key_name` | No | SSH key pair name |
+| `spot` | No | Use EC2 Spot instances instead of on-demand (default: false) |
+| `metrics_port` | No | Port for Prometheus metrics endpoint (default: 0/disabled) |
+| `region` | No | AWS region for metrics labels (auto-detected if not specified) |
+| `log_level` | No | `debug`, `info`, `warn`, `error` (default: `info`) |
+| `log_format` | No | `text`, `json` (default: `text`) |
 
-*Provide either GitHub App credentials (all three) OR a PAT.
+*Provide either `[github_app]` (all three fields) OR `token`.
+
+### `[github_app]`
+
+| Key | Description |
+|-----|-------------|
+| `client_id` | GitHub App Client ID |
+| `installation_id` | GitHub App Installation ID |
+| `private_key` | GitHub App private key (PEM, triple-quoted multi-line string) |
+
+### Example
+
+```toml
+url = "https://github.com/myorg/myrepo"
+name = "ec2-runners"
+labels = ["ec2-runner"]
+ami_id = "ami-1234567890abcdef0"
+instance_types = ["t3.medium"]
+subnet_id = "subnet-12345678"
+security_group_ids = ["sg-12345678"]
+iam_instance_profile = "github-actions-runner-instance"
+metrics_port = 9090
+
+[github_app]
+client_id = "Iv1.xxx"
+installation_id = 123456
+private_key = """-----BEGIN RSA PRIVATE KEY-----
+...
+-----END RSA PRIVATE KEY-----"""
+```
+
+### Flag overrides
+
+Only operational flags are accepted on the command line; everything else comes from the TOML file. Flags override the config file when set.
+
+| Flag | Applies to | Description |
+|------|------------|-------------|
+| `--config` | `run`, `delete` | Path to TOML config file (required for `run`) |
+| `--log-level` | `run`, `delete` | Overrides `log_level` |
+| `--log-format` | `run`, `delete` | Overrides `log_format` |
+| `--version` | `run` | Print version information |
+
+For `delete`, all flags from the legacy CLI (`--url`, `--name`, `--app-client-id`, etc.) are still accepted and override the config file when explicitly set, so ad-hoc deletes without a config file remain supported.
 
 ### Prometheus Metrics
 
 The scaler can optionally expose Prometheus metrics for monitoring:
 
 ```bash
-./scaleset-ec2-provider run \
-  --url https://github.com/myorg/myrepo \
-  --name ec2-runners \
-  --metrics-port 9090 \
-  ... other flags
+# config.toml
+# ...
+# metrics_port = 9090
+
+./scaleset-ec2-provider run --config config.toml
 ```
 
-When `--metrics-port` is set (default: 0/disabled), an HTTP endpoint is available at `http://localhost:9090/metrics`.
+When `metrics_port` is set (default: 0/disabled), an HTTP endpoint is available at `http://localhost:9090/metrics`.
 
 #### Available Metrics
 

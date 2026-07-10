@@ -1,0 +1,66 @@
+# Example config for scaleset-ec2-provider.
+# Copy to config.toml and edit, then run: scaleset-ec2-provider run --config config.toml
+
+# Required: GitHub org, repo, or enterprise URL where the scale set is registered.
+url = "https://github.com/myorg/myrepo"
+
+# Required: scale set name.
+name = "ec2-runners"
+
+# Optional: labels for workflow targeting. Defaults to [name] if omitted.
+labels = ["ec2-runner"]
+
+# Optional: runner counts.
+max_runners = 10
+min_runners = 0
+
+# Optional: runner group name (defaults to the default runner group).
+runner_group = "default"
+
+# Optional: logging.
+log_level = "info"   # debug | info | warn | error
+log_format = "text"  # text | json
+
+# --- EC2 settings ---
+
+# Required: AMI ID with GitHub Actions runner pre-installed.
+ami_id = "ami-1234567890abcdef0"
+
+# Optional: EC2 instance types (shuffled on each launch). Defaults to ["t3.medium"].
+instance_types = ["t3.medium"]
+
+# Required: subnet ID for instances.
+subnet_id = "subnet-12345678"
+
+# Required: security group IDs.
+security_group_ids = ["sg-12345678"]
+
+# Optional: IAM instance profile name.
+iam_instance_profile = "github-actions-runner-instance"
+
+# Optional: SSH key pair name.
+key_name = ""
+
+# Optional: use EC2 Spot instead of on-demand.
+spot = false
+
+# Optional: AWS region for metrics labels (auto-detected if omitted).
+region = "ap-southeast-2"
+
+# --- Metrics ---
+
+# Optional: Prometheus metrics endpoint port (0 = disabled).
+metrics_port = 9090
+
+# --- Auth: provide EITHER [github_app] OR token, not both. ---
+
+[github_app]
+client_id = "Iv1.xxx"
+installation_id = 123456
+# Multi-line PEM private key. Use triple-quoted strings.
+private_key = """-----BEGIN RSA PRIVATE KEY-----
+...
+-----END RSA PRIVATE KEY-----"""
+
+# Alternative: personal access token instead of a GitHub App.
+# token = "ghp_xxx"
