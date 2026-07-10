@@ -57,10 +57,15 @@ metrics_port = 9090
 [github_app]
 client_id = "Iv1.xxx"
 installation_id = 123456
-# Multi-line PEM private key. Use triple-quoted strings.
+# Provide EITHER private_key (inline PEM, triple-quoted multi-line string)
+# OR private_key_secret (the name/ARN of an AWS Secrets Manager secret whose
+# value is the PEM private key). They are mutually exclusive. When
+# private_key_secret is set, the key is fetched from Secrets Manager at startup
+# using the default AWS credential chain (instance profile, env vars, etc.).
 private_key = """-----BEGIN RSA PRIVATE KEY-----
 ...
 -----END RSA PRIVATE KEY-----"""
+# private_key_secret = "github/app-private-key"
 
 # Alternative: personal access token instead of a GitHub App.
 # token = "ghp_xxx"
