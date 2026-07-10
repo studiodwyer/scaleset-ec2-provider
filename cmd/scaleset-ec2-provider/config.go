@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/actions/scaleset"
+	"github.com/pelletier/go-toml/v2"
 )
 
 type Config struct {
@@ -132,4 +133,70 @@ func (c *Config) BuildLabels() []scaleset.Label {
 		return labels
 	}
 	return []scaleset.Label{{Name: c.ScaleSetName}}
+}
+
+type tomlGitHubApp struct {
+	ClientID       string `toml:"client_id"`
+	InstallationID int64  `toml:"installation_id"`
+	PrivateKey     string `toml:"private_key"`
+}
+
+type tomlConfig struct {
+	RegistrationURL    string        `toml:"url"`
+	MaxRunners         int           `toml:"max_runners"`
+	MinRunners         int           `toml:"min_runners"`
+	ScaleSetName       string        `toml:"name"`
+	Labels             []string      `toml:"labels"`
+	RunnerGroup        string        `toml:"runner_group"`
+	GitHubApp          tomlGitHubApp `toml:"github_app"`
+	Token              string        `toml:"token"`
+	LogLevel           string        `toml:"log_level"`
+	LogFormat          string        `toml:"log_format"`
+	AMI                string        `toml:"ami_id"`
+	InstanceTypes      []string      `toml:"instance_types"`
+	SubnetID           string        `toml:"subnet_id"`
+	SecurityGroupIDs   []string      `toml:"security_group_ids"`
+	IAMInstanceProfile string        `toml:"iam_instance_profile"`
+	KeyName            string        `toml:"key_name"`
+	UseSpot            bool          `toml:"spot"`
+	MetricsPort        int           `toml:"metrics_port"`
+	Region             string        `toml:"region"`
+}
+
+func LoadConfig(path string) (Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Config{}, fmt.Errorf("read config %q: %w", path, err)
+	}
+
+	var tc tomlConfig
+	if err := toml.Unmarshal(data, &tc); err != nil {
+		return Config{}, fmt.Errorf("parse config %q: %w", path, err)
+	}
+
+	return Config{
+		RegistrationURL: tc.RegistrationURL,
+		MaxRunners:      tc.MaxRunners,
+		MinRunners:      tc.MinRunners,
+		ScaleSetName:    tc.ScaleSetName,
+		Labels:          tc.Labels,
+		RunnerGroup:     tc.RunnerGroup,
+		GitHubApp: scaleset.GitHubAppAuth{
+			ClientID:       tc.GitHubApp.ClientID,
+			InstallationID: tc.GitHubApp.InstallationID,
+			PrivateKey:     tc.GitHubApp.PrivateKey,
+		},
+		Token:              tc.Token,
+		LogLevel:           tc.LogLevel,
+		LogFormat:          tc.LogFormat,
+		AMI:                tc.AMI,
+		InstanceTypes:      tc.InstanceTypes,
+		SubnetID:           tc.SubnetID,
+		SecurityGroupIDs:   tc.SecurityGroupIDs,
+		IAMInstanceProfile: tc.IAMInstanceProfile,
+		KeyName:            tc.KeyName,
+		UseSpot:            tc.UseSpot,
+		MetricsPort:        tc.MetricsPort,
+		Region:             tc.Region,
+	}, nil
 }
