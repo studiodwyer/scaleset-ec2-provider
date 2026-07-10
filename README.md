@@ -89,6 +89,33 @@ Only operational flags are accepted on the command line; everything else comes f
 
 For `delete`, all flags from the legacy CLI (`--url`, `--name`, `--app-client-id`, etc.) are still accepted and override the config file when explicitly set, so ad-hoc deletes without a config file remain supported.
 
+### Hot reload
+
+The `run` command catches `SIGHUP` (the same signal systemd sends for `systemctl reload <unit>`) and re-reads the config file passed to `--config`. This lets you change scaling and EC2 launch parameters without restarting or dropping in-flight jobs.
+
+```bash
+kill -HUP $(pidof scaleset-ec2-provider)
+# or, under systemd:
+systemctl reload scaleset-ec2-provider
+```
+
+The following fields are applied live on reload and take effect on the next scaling decision:
+
+| Key | Reloadable |
+|-----|------------|
+| `min_runners`, `max_runners` | Yes |
+| `ami_id` | Yes |
+| `instance_types` | Yes |
+| `subnet_id` | Yes |
+| `security_group_ids` | Yes |
+| `iam_instance_profile` | Yes |
+| `key_name` | Yes |
+| `spot` | Yes |
+
+All other fields (`url`, `name`, `labels`, `runner_group`, auth (`[github_app]`/`token`/`private_key_secret`), `metrics_port`, `region`, `log_level`, `log_format`) are **not** applied on reload; if they differ from the running config, a warning is logged and they take effect on the next process restart.
+
+If the re-read config file is missing, malformed, or fails validation, the reload is abandoned and the previously-loaded config keeps running (an error is logged). Command-line flag overrides (`--log-level`, `--log-format`) only apply at startup and are not re-evaluated.
+
 ### Prometheus Metrics
 
 The scaler can optionally expose Prometheus metrics for monitoring:
