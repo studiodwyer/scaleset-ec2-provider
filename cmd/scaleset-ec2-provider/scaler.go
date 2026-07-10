@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
@@ -19,11 +20,10 @@ import (
 	"github.com/studiodwyer/scaleset-ec2-provider/internal/metrics"
 )
 
-type Scaler struct {
-	runners            *runnerState
-	ec2Client          interfaces.EC2Client
-	scalesetClient     interfaces.ScalesetClient
-	scaleSetID         int
+// scalerSettings holds the hot-reloadable EC2 launch and scaling parameters.
+// The active values are stored as an atomic.Pointer on Scaler so a config
+// reload can swap them in without locking the scaling hot path.
+type scalerSettings struct {
 	ami                string
 	instanceTypes      []string
 	subnetID           string
@@ -33,8 +33,16 @@ type Scaler struct {
 	useSpot            bool
 	minRunners         int
 	maxRunners         int
-	logger             *slog.Logger
-	metrics            *metrics.Metrics
+}
+
+type Scaler struct {
+	runners        *runnerState
+	ec2Client      interfaces.EC2Client
+	scalesetClient interfaces.ScalesetClient
+	scaleSetID     int
+	settings       atomic.Pointer[scalerSettings]
+	logger         *slog.Logger
+	metrics        *metrics.Metrics
 }
 
 type ScalerConfig struct {
@@ -55,10 +63,20 @@ type ScalerConfig struct {
 }
 
 func NewScaler(config ScalerConfig) *Scaler {
-	return &Scaler{
-		ec2Client:          config.EC2Client,
-		scalesetClient:     config.ScalesetClient,
-		scaleSetID:         config.ScaleSetID,
+	s := &Scaler{
+		ec2Client:      config.EC2Client,
+		scalesetClient: config.ScalesetClient,
+		scaleSetID:     config.ScaleSetID,
+		logger:         config.Logger,
+		metrics:        config.Metrics,
+		runners:        newRunnerState(config.Logger.WithGroup("runner-state"), config.Metrics),
+	}
+	s.settings.Store(newScalerSettings(config))
+	return s
+}
+
+func newScalerSettings(config ScalerConfig) *scalerSettings {
+	return &scalerSettings{
 		ami:                config.AMI,
 		instanceTypes:      config.InstanceTypes,
 		subnetID:           config.SubnetID,
@@ -68,15 +86,27 @@ func NewScaler(config ScalerConfig) *Scaler {
 		useSpot:            config.UseSpot,
 		minRunners:         config.MinRunners,
 		maxRunners:         config.MaxRunners,
-		logger:             config.Logger,
-		metrics:            config.Metrics,
-		runners:            newRunnerState(config.Logger.WithGroup("runner-state"), config.Metrics),
 	}
 }
 
+// Reload atomically replaces the reloadable EC2/scaling parameters. Values
+// take effect on the next scaling decision; in-flight launches are unaffected.
+func (s *Scaler) Reload(settings scalerSettings) {
+	s.settings.Store(&settings)
+	s.logger.Info("Scaler settings reloaded",
+		slog.Int("minRunners", settings.minRunners),
+		slog.Int("maxRunners", settings.maxRunners),
+		slog.String("ami", settings.ami),
+		slog.Any("instanceTypes", settings.instanceTypes),
+		slog.String("subnetId", settings.subnetID),
+		slog.Bool("spot", settings.useSpot),
+	)
+}
+
 func (s *Scaler) HandleDesiredRunnerCount(ctx context.Context, count int) (int, error) {
+	st := s.settings.Load()
 	currentCount := s.runners.count()
-	targetRunnerCount := min(s.maxRunners, s.minRunners+count)
+	targetRunnerCount := min(st.maxRunners, st.minRunners+count)
 
 	switch {
 	case targetRunnerCount == currentCount:
@@ -149,6 +179,7 @@ func (s *Scaler) HandleJobCompleted(ctx context.Context, jobInfo *scaleset.JobCo
 }
 
 func (s *Scaler) startRunner(ctx context.Context) (string, error) {
+	st := s.settings.Load()
 	name := fmt.Sprintf("runner-%s", uuid.NewString()[:8])
 
 	jit, err := s.scalesetClient.GenerateJitRunnerConfig(ctx,
@@ -165,12 +196,12 @@ func (s *Scaler) startRunner(ctx context.Context) (string, error) {
 	userData := base64.StdEncoding.EncodeToString([]byte(s.buildUserData(jit.EncodedJITConfig)))
 
 	var sgIDs []string
-	for _, id := range s.securityGroupIDs {
+	for _, id := range st.securityGroupIDs {
 		sgIDs = append(sgIDs, id)
 	}
 
-	candidateTypes := make([]string, len(s.instanceTypes))
-	copy(candidateTypes, s.instanceTypes)
+	candidateTypes := make([]string, len(st.instanceTypes))
+	copy(candidateTypes, st.instanceTypes)
 	rand.Shuffle(len(candidateTypes), func(i, j int) {
 		candidateTypes[i], candidateTypes[j] = candidateTypes[j], candidateTypes[i]
 	})
@@ -178,11 +209,11 @@ func (s *Scaler) startRunner(ctx context.Context) (string, error) {
 	var lastErr error
 	for _, instanceType := range candidateTypes {
 		input := &ec2.RunInstancesInput{
-			ImageId:          &s.ami,
+			ImageId:          &st.ami,
 			InstanceType:     types.InstanceType(instanceType),
 			MinCount:         int32Ptr(1),
 			MaxCount:         int32Ptr(1),
-			SubnetId:         &s.subnetID,
+			SubnetId:         &st.subnetID,
 			SecurityGroupIds: sgIDs,
 			UserData:         &userData,
 			TagSpecifications: []types.TagSpecification{
@@ -200,17 +231,17 @@ func (s *Scaler) startRunner(ctx context.Context) (string, error) {
 			},
 		}
 
-		if s.iamInstanceProfile != "" {
+		if st.iamInstanceProfile != "" {
 			input.IamInstanceProfile = &types.IamInstanceProfileSpecification{
-				Name: &s.iamInstanceProfile,
+				Name: &st.iamInstanceProfile,
 			}
 		}
 
-		if s.keyName != "" {
-			input.KeyName = &s.keyName
+		if st.keyName != "" {
+			input.KeyName = &st.keyName
 		}
 
-		if s.useSpot {
+		if st.useSpot {
 			input.InstanceMarketOptions = &types.InstanceMarketOptionsRequest{
 				MarketType:  types.MarketTypeSpot,
 				SpotOptions: &types.SpotMarketOptions{},
@@ -245,7 +276,7 @@ func (s *Scaler) startRunner(ctx context.Context) (string, error) {
 
 		instanceID := *result.Instances[0].InstanceId
 		marketType := "on-demand"
-		if s.useSpot {
+		if st.useSpot {
 			marketType = "spot"
 		}
 		s.logger.Info("Started EC2 instance",
@@ -266,7 +297,7 @@ func (s *Scaler) startRunner(ctx context.Context) (string, error) {
 	if s.metrics != nil {
 		s.metrics.IncErrors("ec2_run")
 	}
-	return "", fmt.Errorf("failed to start instance: all %d instance types exhausted (last error: %w)", len(s.instanceTypes), lastErr)
+	return "", fmt.Errorf("failed to start instance: all %d instance types exhausted (last error: %w)", len(st.instanceTypes), lastErr)
 }
 
 func isCapacityError(err error) bool {

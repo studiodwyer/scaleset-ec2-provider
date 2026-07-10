@@ -439,3 +439,86 @@ func TestStartRunner_SpotLimitExceeded_IsCapacityError(t *testing.T) {
 		t.Fatal("Expected runner name, got empty string")
 	}
 }
+
+func TestReload_UpdatesMaxRunners(t *testing.T) {
+	ec2Client := mocks.NewMockEC2Client()
+	scaler := newTestScaler(ec2Client, []string{"t3.medium"}) // maxRunners = 10
+
+	scaler.Reload(scalerSettings{
+		ami:              "ami-test",
+		instanceTypes:    []string{"t3.medium"},
+		subnetID:         "subnet-test",
+		securityGroupIDs: []string{"sg-test"},
+		minRunners:       0,
+		maxRunners:       2,
+	})
+
+	count, err := scaler.HandleDesiredRunnerCount(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("HandleDesiredRunnerCount failed: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected max capped at 2 after reload, got %d", count)
+	}
+	if ec2Client.GetInstanceCount() != 2 {
+		t.Errorf("expected 2 instances after reload, got %d", ec2Client.GetInstanceCount())
+	}
+}
+
+func TestReload_UpdatesMinRunners(t *testing.T) {
+	ec2Client := mocks.NewMockEC2Client()
+	scaler := newTestScaler(ec2Client, []string{"t3.medium"}) // minRunners = 0
+
+	scaler.Reload(scalerSettings{
+		ami:              "ami-test",
+		instanceTypes:    []string{"t3.medium"},
+		subnetID:         "subnet-test",
+		securityGroupIDs: []string{"sg-test"},
+		minRunners:       3,
+		maxRunners:       10,
+	})
+
+	// No demand (count=0) but minRunners=3 -> target = min(10, 3+0) = 3.
+	count, err := scaler.HandleDesiredRunnerCount(context.Background(), 0)
+	if err != nil {
+		t.Fatalf("HandleDesiredRunnerCount failed: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected min runners 3 after reload, got %d", count)
+	}
+}
+
+func TestReload_UpdatesEC2LaunchParams(t *testing.T) {
+	ec2Client := mocks.NewMockEC2Client()
+	scaler := newTestScaler(ec2Client, []string{"t3.medium"}) // on-demand, ami-test
+
+	scaler.Reload(scalerSettings{
+		ami:              "ami-new",
+		instanceTypes:    []string{"c5.large"},
+		subnetID:         "subnet-new",
+		securityGroupIDs: []string{"sg-new"},
+		useSpot:          true,
+		minRunners:       0,
+		maxRunners:       10,
+	})
+
+	if _, err := scaler.startRunner(context.Background()); err != nil {
+		t.Fatalf("startRunner failed: %v", err)
+	}
+
+	instances := ec2Client.GetInstances()
+	if len(instances) != 1 {
+		t.Fatalf("expected 1 instance, got %d", len(instances))
+	}
+	for _, inst := range instances {
+		if inst.ImageId == nil || *inst.ImageId != "ami-new" {
+			t.Errorf("expected ami-new after reload, got %v", inst.ImageId)
+		}
+		if inst.InstanceType != types.InstanceTypeC5Large {
+			t.Errorf("expected c5.large after reload, got %v", inst.InstanceType)
+		}
+	}
+	if ec2Client.LastMarketOptionsOnce == nil || ec2Client.LastMarketOptionsOnce.MarketType != types.MarketTypeSpot {
+		t.Errorf("expected spot market options after reload")
+	}
+}

@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
@@ -113,7 +115,7 @@ func runCommand(args []string) {
 		cfg.LogFormat = logFormat
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	smClient, err := newSecretsManagerClient(ctx)
@@ -131,7 +133,7 @@ func runCommand(args []string) {
 		os.Exit(1)
 	}
 
-	if err := run(ctx, cfg); err != nil {
+	if err := run(ctx, cfg, configPath); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
@@ -372,7 +374,7 @@ func setupLogger(logLevel, logFormat string) *slog.Logger {
 	}
 }
 
-func run(ctx context.Context, c Config) error {
+func run(ctx context.Context, c Config, configPath string) error {
 	logger := c.Logger()
 
 	scalesetClient, err := c.ScalesetClient()
@@ -486,11 +488,97 @@ func run(ctx context.Context, c Config) error {
 
 	defer scaler.shutdown(context.WithoutCancel(ctx))
 
+	// SIGHUP triggers a hot reload of the config file (same signal systemd
+	// sends for `systemctl reload`). The reload only applies the EC2/scaling
+	// parameters held by the scaler; non-reloadable fields are ignored and a
+	// failed reload leaves the current config in place.
+	reloadCh := make(chan os.Signal, 1)
+	signal.Notify(reloadCh, syscall.SIGHUP)
+	defer signal.Stop(reloadCh)
+
 	logger.Info("Starting listener")
-	if err := listener.Run(ctx, scaler); !errors.Is(err, context.Canceled) {
-		return fmt.Errorf("listener run failed: %w", err)
+	listenerErrCh := make(chan error, 1)
+	go func() {
+		listenerErrCh <- listener.Run(ctx, scaler)
+	}()
+
+	for {
+		select {
+		case <-reloadCh:
+			reloadConfig(logger, configPath, scaler, &c)
+			continue
+		case err := <-listenerErrCh:
+			if !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("listener run failed: %w", err)
+			}
+			return nil
+		}
 	}
-	return nil
+}
+
+// reloadConfig re-reads and validates the config file, then atomically applies
+// the reloadable EC2/scaling parameters to the scaler. On any error the
+// existing config is left untouched. Non-reloadable field changes are logged as
+// warnings (they require a restart).
+func reloadConfig(logger *slog.Logger, configPath string, scaler *Scaler, current *Config) {
+	logger.Info("Reloading config", slog.String("path", configPath))
+
+	newCfg, err := LoadConfig(configPath)
+	if err != nil {
+		logger.Error("Config reload failed; keeping current config", slog.String("error", err.Error()))
+		return
+	}
+	if err := newCfg.Validate(); err != nil {
+		logger.Error("Config reload failed validation; keeping current config", slog.String("error", err.Error()))
+		return
+	}
+
+	warnNonReloadableChanges(logger, current, &newCfg)
+
+	scaler.Reload(scalerSettings{
+		ami:                newCfg.AMI,
+		instanceTypes:      newCfg.InstanceTypes,
+		subnetID:           newCfg.SubnetID,
+		securityGroupIDs:   newCfg.SecurityGroupIDs,
+		iamInstanceProfile: newCfg.IAMInstanceProfile,
+		keyName:            newCfg.KeyName,
+		useSpot:            newCfg.UseSpot,
+		minRunners:         newCfg.MinRunners,
+		maxRunners:         newCfg.MaxRunners,
+	})
+
+	*current = newCfg
+}
+
+// warnNonReloadableChanges logs a warning for each field that differs between
+// old and new but is not applied by a hot reload. Auth credentials are compared
+// at the config-identifier level (client_id/installation_id/token/private_key_secret)
+// rather than the resolved private key, which is fetched only at startup.
+func warnNonReloadableChanges(logger *slog.Logger, old, new *Config) {
+	type change struct {
+		field   string
+		changed bool
+	}
+	changes := []change{
+		{"url", old.RegistrationURL != new.RegistrationURL},
+		{"name", old.ScaleSetName != new.ScaleSetName},
+		{"runner_group", old.RunnerGroup != new.RunnerGroup},
+		{"labels", !slices.Equal(old.Labels, new.Labels)},
+		{"token", old.Token != new.Token},
+		{"log_level", old.LogLevel != new.LogLevel},
+		{"log_format", old.LogFormat != new.LogFormat},
+		{"metrics_port", old.MetricsPort != new.MetricsPort},
+		{"region", old.Region != new.Region},
+		{"github_app.client_id", old.GitHubApp.ClientID != new.GitHubApp.ClientID},
+		{"github_app.installation_id", old.GitHubApp.InstallationID != new.GitHubApp.InstallationID},
+		{"private_key_secret", old.PrivateKeySecret != new.PrivateKeySecret},
+	}
+	for _, ch := range changes {
+		if ch.changed {
+			logger.Warn("Config field changed but is not reloadable; restart to apply",
+				slog.String("field", ch.field))
+		}
+	}
 }
 
 func systemInfo(scaleSetID int) scaleset.SystemInfo {
