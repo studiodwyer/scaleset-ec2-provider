@@ -14,6 +14,7 @@ import (
 	"github.com/actions/scaleset/listener"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
 	"github.com/studiodwyer/scaleset-ec2-provider/internal/interfaces"
 	"github.com/studiodwyer/scaleset-ec2-provider/internal/metrics"
@@ -115,6 +116,16 @@ func runCommand(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
+	smClient, err := newSecretsManagerClient(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if err := cfg.ResolveSecrets(ctx, smClient); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
 	if err := cfg.Validate(); err != nil {
 		fmt.Fprintf(os.Stderr, "invalid configuration: %v\n", err)
 		os.Exit(1)
@@ -173,6 +184,17 @@ func deleteCommand(args []string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
 			os.Exit(1)
+		}
+		if cfg.PrivateKeySecret != "" {
+			smClient, err := newSecretsManagerClient(context.Background())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				os.Exit(1)
+			}
+			if err := cfg.ResolveSecrets(context.Background(), smClient); err != nil {
+				fmt.Fprintf(os.Stderr, "%v\n", err)
+				os.Exit(1)
+			}
 		}
 		urlVal = cfg.RegistrationURL
 		nameVal = cfg.ScaleSetName
@@ -479,4 +501,12 @@ func systemInfo(scaleSetID int) scaleset.SystemInfo {
 		Version:    version,
 		ScaleSetID: scaleSetID,
 	}
+}
+
+func newSecretsManagerClient(ctx context.Context) (*interfaces.RealSecretsManagerClient, error) {
+	awsCfg, err := config.LoadDefaultConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load AWS config: %w", err)
+	}
+	return &interfaces.RealSecretsManagerClient{Client: secretsmanager.NewFromConfig(awsCfg)}, nil
 }

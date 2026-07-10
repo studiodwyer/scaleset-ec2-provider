@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/url"
@@ -8,7 +9,10 @@ import (
 	"strings"
 
 	"github.com/actions/scaleset"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/pelletier/go-toml/v2"
+	"github.com/studiodwyer/scaleset-ec2-provider/internal/interfaces"
 )
 
 type Config struct {
@@ -19,6 +23,7 @@ type Config struct {
 	Labels             []string
 	RunnerGroup        string
 	GitHubApp          scaleset.GitHubAppAuth
+	PrivateKeySecret   string
 	Token              string
 	LogLevel           string
 	LogFormat          string
@@ -70,6 +75,31 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("max runners cannot be less than min-runners")
 	}
 
+	return nil
+}
+
+// ResolveSecrets fetches the GitHub App private key from AWS Secrets Manager
+// when private_key_secret is set, populating GitHubApp.PrivateKey. The inline
+// private_key and private_key_secret are mutually exclusive.
+func (c *Config) ResolveSecrets(ctx context.Context, client interfaces.SecretsManagerClient) error {
+	if c.PrivateKeySecret == "" {
+		return nil
+	}
+	if c.GitHubApp.PrivateKey != "" {
+		return fmt.Errorf("private_key and private_key_secret are mutually exclusive")
+	}
+
+	out, err := client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{
+		SecretId: aws.String(c.PrivateKeySecret),
+	})
+	if err != nil {
+		return fmt.Errorf("read private key secret %q: %w", c.PrivateKeySecret, err)
+	}
+	if out.SecretString == nil || *out.SecretString == "" {
+		return fmt.Errorf("private key secret %q is empty", c.PrivateKeySecret)
+	}
+
+	c.GitHubApp.PrivateKey = *out.SecretString
 	return nil
 }
 
@@ -136,9 +166,10 @@ func (c *Config) BuildLabels() []scaleset.Label {
 }
 
 type tomlGitHubApp struct {
-	ClientID       string `toml:"client_id"`
-	InstallationID int64  `toml:"installation_id"`
-	PrivateKey     string `toml:"private_key"`
+	ClientID         string `toml:"client_id"`
+	InstallationID   int64  `toml:"installation_id"`
+	PrivateKey       string `toml:"private_key"`
+	PrivateKeySecret string `toml:"private_key_secret"`
 }
 
 type tomlConfig struct {
@@ -186,6 +217,7 @@ func LoadConfig(path string) (Config, error) {
 			InstallationID: tc.GitHubApp.InstallationID,
 			PrivateKey:     tc.GitHubApp.PrivateKey,
 		},
+		PrivateKeySecret:   tc.GitHubApp.PrivateKeySecret,
 		Token:              tc.Token,
 		LogLevel:           tc.LogLevel,
 		LogFormat:          tc.LogFormat,
