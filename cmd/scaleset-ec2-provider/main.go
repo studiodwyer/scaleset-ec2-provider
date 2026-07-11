@@ -14,6 +14,7 @@ import (
 
 	"github.com/actions/scaleset"
 	"github.com/actions/scaleset/listener"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -118,7 +119,7 @@ func runCommand(args []string) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	smClient, err := newSecretsManagerClient(ctx)
+	smClient, err := newSecretsManagerClient(ctx, cfg.Region)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
@@ -188,7 +189,7 @@ func deleteCommand(args []string) {
 			os.Exit(1)
 		}
 		if cfg.PrivateKeySecret != "" {
-			smClient, err := newSecretsManagerClient(context.Background())
+			smClient, err := newSecretsManagerClient(context.Background(), cfg.Region)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 				os.Exit(1)
@@ -415,7 +416,7 @@ func run(ctx context.Context, c Config, configPath string) error {
 		}
 	}()
 
-	awsCfg, err := config.LoadDefaultConfig(ctx)
+	awsCfg, err := loadAWSConfig(ctx, c.Region)
 	if err != nil {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
@@ -592,10 +593,20 @@ func systemInfo(scaleSetID int) scaleset.SystemInfo {
 	}
 }
 
-func newSecretsManagerClient(ctx context.Context) (*interfaces.RealSecretsManagerClient, error) {
-	awsCfg, err := config.LoadDefaultConfig(ctx)
+func newSecretsManagerClient(ctx context.Context, region string) (*interfaces.RealSecretsManagerClient, error) {
+	awsCfg, err := loadAWSConfig(ctx, region)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 	return &interfaces.RealSecretsManagerClient{Client: secretsmanager.NewFromConfig(awsCfg)}, nil
+}
+
+// loadAWSConfig loads the AWS SDK default config, applying region when set. If 
+// ommited the default AWS credential chain resolves it.
+func loadAWSConfig(ctx context.Context, region string) (aws.Config, error) {
+	var opts []func(*config.LoadOptions) error
+	if region != "" {
+		opts = append(opts, config.WithRegion(region))
+	}
+	return config.LoadDefaultConfig(ctx, opts...)
 }
