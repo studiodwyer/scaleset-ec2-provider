@@ -44,7 +44,9 @@ key_name = ""
 # Optional: use EC2 Spot instead of on-demand.
 spot = false
 
-# Optional: AWS region for metrics labels (auto-detected if omitted).
+# Optional: AWS region used by the Secrets Manager and EC2 clients. When set it
+# takes precedence over AWS_REGION. When omitted the default AWS credential chain
+# resolves the region
 region = "ap-southeast-2"
 
 # --- Metrics ---
